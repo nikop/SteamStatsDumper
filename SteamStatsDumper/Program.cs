@@ -11,95 +11,59 @@ namespace SteamStatsDumper
 {
     class Program
     {
-        public abstract class PICSInfo
-        {
-            public uint ID { get; set; }
-
-            public uint ChangeNumber { get; set; }
-
-            protected PICSInfo()
-            {
-            }
-
-            public PICSInfo(SteamApps.PICSProductInfoCallback.PICSProductInfo info)
-            {
-                ID = info.ID;
-                ChangeNumber = info.ChangeNumber;
-            }
-        }
-
-        public class PICSPackageInfo : PICSInfo
-        {
-            public List<uint> Apps { get; set; }
-
-            public EBillingType BillingType { get; set; }
-
-            public bool ReleaseStateOverride { get; set; }
-
-            public PICSPackageInfo()
-            {
-            }
-
-            public PICSPackageInfo(SteamApps.PICSProductInfoCallback.PICSProductInfo info) : base(info)
-            {
-                Apps = info.KeyValues["appids"].Children.Select(x => x.AsUnsignedInteger()).ToList();
-                BillingType = (EBillingType)info.KeyValues["billingtype"].AsInteger();
-                ReleaseStateOverride = info.KeyValues["extended"]["releasestateoverride"] != KeyValue.Invalid;
-            }
-        }
-
-        public class PICSAppInfo : PICSInfo
-        {
-            public string Name { get; set; }
-
-            public string Type { get; set; }
-
-            public string ReleaseState { get; set; }
-
-            public PICSAppInfo()
-            {
-            }
-
-            public PICSAppInfo(SteamApps.PICSProductInfoCallback.PICSProductInfo info) : base(info)
-            {
-                Name = info.KeyValues["common"]["name"].AsString();
-                Type = info.KeyValues["common"]["type"].AsString()?.ToLower();
-                ReleaseState = info.KeyValues["common"]["releasestate"].AsString() ?? (info.KeyValues["common"] != KeyValue.Invalid ? "released" : "unavailable");
-            }
-        }
-
-        public class DayInfo
-        {
-            public Dictionary<string, int> Entries = new Dictionary<string, int>();
-        }
 
         public static EBillingType[] TemporaryTypes = new EBillingType[]
         {
             EBillingType.FreeOnDemand,
         };
 
-        static async void OnLicenseList(SteamApps.LicenseListCallback callback)
+        static PICSConnection conn;
+
+        static Dictionary<string, Action<AllInfo>> Outputs = new Dictionary<string, Action<AllInfo>>();
+
+        static async Task Main(string[] args)
         {
-            Console.WriteLine("Got License List");
+            var outputsTodo = new List<string>();
 
-            var newPackages = callback.LicenseList.Select(x => x.PackageID).ToList();
-
-            if (!newPackages.Any())
+            if (args.Length == 1)
+                outputsTodo.AddRange(args[0].Split(','));
+            else if (args.Length != 0)
+            {
+                Console.WriteLine("Unknown number of arguments");
                 return;
-
-            try
-            {
-                Console.WriteLine("Getting metadata");
-
-                await UpdatePackages(newPackages);
-
-                Console.WriteLine("Got metadata");
             }
-            catch (Exception ex)
+            else
+                outputsTodo.Add("csv");
+
+            Outputs.Add("csv", OutputCSV);
+            Outputs.Add("html", OutputHtml);
+
+            if (outputsTodo.Any(x => !Outputs.ContainsKey(x)))
             {
-                Console.WriteLine("Error!");
-                Console.Write(ex);
-                throw;
+                Console.WriteLine("Unknown output of arguments");
+                return;
+            }
+
+            Console.Write("Username: ");
+            var username = Console.ReadLine().Trim();
+            Console.Write("Password: ");
+            var password = Console.ReadLine().Trim();
+
+            conn = new PICSConnection(username, password)
+            {
+                LoginID = 1337,
+            };
+
+            Console.WriteLine("Connecting ");
+            await conn.ConnectAsync();
+            Console.WriteLine("Connected ");
+
+            var res = await conn.PICSReady;
+
+            if (!res)
+            {
+                Console.WriteLine("Error. Failed to get metainfo.");
+                Environment.Exit(1);
             }
 
             var appsOwned = new List<uint>();
@@ -129,7 +93,7 @@ namespace SteamStatsDumper
 
                 var di = days[license.TimeCreated.Date];
 
-                var package = Packages[license.PackageID];
+                var package = conn.Packages[license.PackageID];
 
                 var typesPackage = new List<string>();
 
@@ -150,7 +114,7 @@ namespace SteamStatsDumper
                     var types = new List<string>();
                     types.AddRange(typesPackage);
 
-                    var app = Apps[appid];
+                    var app = conn.Apps[appid];
 
                     var appType = app?.Type ?? "unknown";
 
@@ -171,25 +135,41 @@ namespace SteamStatsDumper
                 }
             }
 
+            var data = new AllInfo
+            {
+                Totals = totals,
+                Days = days,
+            };
+
+            foreach (var format in outputsTodo)
+            {
+                Outputs[format](data);
+            }
+
+            Environment.Exit(0);
+        }
+
+        protected static void OutputCSV(AllInfo data)
+        {
             var sb = new StringBuilder();
 
             var cums = new Dictionary<string, int>();
 
-            foreach (var key in totals.Keys)
+            foreach (var key in data.Totals.Keys)
                 cums[key] = 0;
 
             sb.Append($"DAY");
 
-            foreach (var key in totals.Keys)
+            foreach (var key in data.Totals.Keys)
                 sb.Append($";{key};{key}_cumulative");
 
             sb.AppendLine();
 
-            foreach (var day in days)
+            foreach (var day in data.Days)
             {
                 sb.Append($"{day.Key.ToShortDateString()}");
 
-                foreach (var key in totals.Keys)
+                foreach (var key in data.Totals.Keys)
                 {
                     var t = day.Value.Entries.ContainsKey(key) ? day.Value.Entries[key] : 0;
 
@@ -204,100 +184,10 @@ namespace SteamStatsDumper
             File.WriteAllText("games.csv", sb.ToString());
 
             Console.WriteLine("Written to games.csv");
-
-            Environment.Exit(0);
         }
 
-        protected static ConcurrentDictionary<uint, PICSAppInfo> Apps { get; set; } = new ConcurrentDictionary<uint, PICSAppInfo>();
-
-        protected static ConcurrentDictionary<uint, PICSPackageInfo> Packages { get; set; } = new ConcurrentDictionary<uint, PICSPackageInfo>();
-
-        protected static  ConcurrentDictionary<uint, ulong> Tokens { get; set; } = new ConcurrentDictionary<uint, ulong>();
-
-        protected static async Task UpdatePackages(IEnumerable<uint> newPackages)
+        protected static void OutputHtml(AllInfo data)
         {
-            // Request info for missing packages
-            var info = await conn.SteamApps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), newPackages.Select(x => new SteamApps.PICSRequest
-            {
-                ID = x,
-                Public = false
-            }));
-
-            await UpdatePackages(info.Results.SelectMany(x => x.Packages.Values).Select(x => new PICSPackageInfo(x)));
-        }
-
-        protected static async Task UpdatePackages(IEnumerable<PICSPackageInfo> packages)
-        {
-            var allapps = packages.SelectMany(x => x.Apps).Distinct().ToList();
-            var missingapps = allapps.Where(x => !Apps.ContainsKey(x));
-
-            foreach (var package in packages)
-                Packages[package.ID] = package;
-
-            if (!missingapps.Any())
-                return;
-
-            await UpdateApps(missingapps);
-        }
-
-        protected static async Task UpdateApps(IEnumerable<uint> newApps)
-        {
-            // Request info for missing packages
-            var info = await conn.SteamApps.PICSGetProductInfo(newApps.Select(x => new SteamApps.PICSRequest
-            {
-                ID = x,
-                Public = false,
-                AccessToken = Tokens.ContainsKey(x) ? Tokens[x] : 0,
-            }), Enumerable.Empty<SteamApps.PICSRequest>());
-
-            await UpdateApps(info.Results.SelectMany(x => x.Apps.Values).Select(x => new PICSAppInfo(x)));
-
-            var missingTokens = info.Results.SelectMany(x => x.Apps.Values).Where(x => x.MissingToken).Select(x => x.ID).ToList();
-
-            if (missingTokens.Any())
-                await GetTokens(missingTokens);
-        }
-
-        protected static async Task<SteamApps.PICSTokensCallback> GetTokens(IEnumerable<uint> apps)
-        {
-            var tokens = await conn.SteamApps.PICSGetAccessTokens(apps, Enumerable.Empty<uint>());
-
-            foreach (var token in tokens.AppTokens)
-            {
-                if (token.Value == 0)
-                    continue;
-
-                Tokens[token.Key] = token.Value;
-            }
-
-            if (tokens.AppTokens.Any())
-                await UpdateApps(tokens.AppTokens.Keys);
-
-            return tokens;
-        }
-
-        protected static async Task UpdateApps(IEnumerable<PICSAppInfo> apps)
-        {
-            foreach (var app in apps)
-                Apps[app.ID] = app;
-        }
-
-        static SteamKitHelper.SteamConnection conn;
-
-        static async Task Main(string[] args)
-        {
-            Console.Write("Username: ");
-            var username = Console.ReadLine().Trim();
-            Console.Write("Password: ");
-            var password = Console.ReadLine().Trim();
-
-            conn = new SteamKitHelper.SteamConnection(username, password);
-
-            conn.CallbackManager.Subscribe<SteamApps.LicenseListCallback>(OnLicenseList);
-
-            Console.WriteLine("Connecting ");
-            await conn.ConnectAsync();
-            Console.WriteLine("Connected ");
         }
     }
 }
