@@ -202,6 +202,10 @@ namespace SteamStatsDumper
             }
 
             File.WriteAllText("games.csv", sb.ToString());
+
+            Console.WriteLine("Written to games.csv");
+
+            Environment.Exit(0);
         }
 
         protected static ConcurrentDictionary<uint, PICSAppInfo> Apps { get; set; } = new ConcurrentDictionary<uint, PICSAppInfo>();
