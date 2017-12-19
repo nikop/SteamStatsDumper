@@ -1,4 +1,5 @@
-﻿using SteamKit2;
+﻿using Newtonsoft.Json;
+using SteamKit2;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -155,13 +156,13 @@ namespace SteamStatsDumper
 
             var cums = new Dictionary<string, int>();
 
-            foreach (var key in data.Totals.Keys)
-                cums[key] = 0;
-
             sb.Append($"DAY");
 
             foreach (var key in data.Totals.Keys)
+            {
+                cums[key] = 0;
                 sb.Append($";{key};{key}_cumulative");
+            }
 
             sb.AppendLine();
 
@@ -188,6 +189,19 @@ namespace SteamStatsDumper
 
         protected static void OutputHtml(AllInfo data)
         {
+            var template = new StringBuilder(File.ReadAllText("template.html"));
+
+            var vars = new Dictionary<string, string>
+            {
+                ["time"] = DateTimeOffset.Now.ToString(),
+                ["packagesJson"] = JsonConvert.SerializeObject(conn.Packages, Formatting.Indented),
+                ["appsJson"] = JsonConvert.SerializeObject(conn.Apps, Formatting.Indented),
+            };
+
+            foreach (var item in vars)
+                template.Replace($"%{item.Key}%", item.Value);
+
+            File.WriteAllText("games.html", template.ToString());
         }
     }
 }
