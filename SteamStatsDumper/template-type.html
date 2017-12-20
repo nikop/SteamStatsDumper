@@ -1,0 +1,9 @@
+﻿<h1>%name%</h1>
+
+<div id="chart%type%" style="height: 400px; width: 100%;"></div>
+
+<script>
+    $(function () {
+        Plotly.newPlot("chart%type%", %json%);
+    });
+</script>

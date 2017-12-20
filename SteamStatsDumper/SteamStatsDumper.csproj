@@ -74,7 +74,11 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="DayInfo.cs" />
+    <Compile Include="AppTypeInfo.cs" />
+    <Compile Include="AllInfo.cs" />
+    <Compile Include="TypeDay.cs" />
+    <Compile Include="IWithNumbers.cs" />
+    <Compile Include="TypeInfo.cs" />
     <Compile Include="PICSConnection.cs" />
     <Compile Include="PICSInfo.cs" />
     <Compile Include="Program.cs" />
@@ -85,7 +89,19 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="template.html">
+    <Content Include="template-base.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="template-games.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="template-type-total.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="template-type.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="template-main.html">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

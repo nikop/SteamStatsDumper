@@ -12,10 +12,55 @@ namespace SteamStatsDumper
 {
     class Program
     {
-
         public static EBillingType[] TemporaryTypes = new EBillingType[]
         {
             EBillingType.FreeOnDemand,
+        };
+
+        public static Dictionary<string, AppTypeInfo> AppType = new Dictionary<string, AppTypeInfo>
+        {
+            ["game"] = new AppTypeInfo
+            {
+                Name = "Games",
+            },
+            ["dlc"] = new AppTypeInfo
+            {
+                Name = "DLC",
+            },
+            ["demo"] = new AppTypeInfo
+            {
+                Name = "Demo",
+            },
+            ["tool"] = new AppTypeInfo
+            {
+                Name = "Tools",
+            },
+            ["config"] = new AppTypeInfo
+            {
+                Name = "Config",
+            },
+            ["unknown"] = new AppTypeInfo
+            {
+                Name = "Unknown",
+                HelpText = "Unable to determine type. Most likely unreleased apps without store page.",
+            },
+            ["application"] = new AppTypeInfo
+            {
+                Name = "Software",
+            },
+            ["series"] = new AppTypeInfo
+            {
+                Name = "Series",
+                HelpText = "Not meant to be owned. Series are",
+            },
+            ["video"] = new AppTypeInfo
+            {
+                Name = "Video",
+            },
+            ["media"] = new AppTypeInfo
+            {
+                Name = "Legacy Media (Trailers)",
+            },
         };
 
         static PICSConnection conn;
@@ -70,38 +115,47 @@ namespace SteamStatsDumper
             var appsOwned = new List<uint>();
             var appsOwnedFree = new List<uint>();
 
-            var showTypes = new List<string>();
-
-            var days = new Dictionary<DateTime, DayInfo>();
-
-            var totals = new Dictionary<string, int>();
-
             var uniqueLicenseFlags = new HashSet<string>();
+
+            var data = new AllInfo();
 
             foreach (var license in conn.Licenses.Where(x => !x.LicenseFlags.HasFlag(ELicenseFlags.Expired)).OrderBy(x => x.TimeCreated))
             {
+                var date = license.TimeCreated.Date;
+
+                if (data.CurrentDay == null || data.CurrentDay.Date != date)
+                {
+                    var nextDay = data.CurrentDay?.Date.AddDays(1) ?? date;
+
+                    // Fill gaps
+                    while (nextDay <= date)
+                    {
+                        data.Days[nextDay] = new TypeDay
+                        {
+                            Date = nextDay,
+                            FreeCumulative = data.CurrentDay?.FreeCumulative ?? 0,
+                            PaidCumulative = data.CurrentDay?.PaidCumulative ?? 0,
+                        };
+                        nextDay = nextDay.AddDays(1);
+                    }
+
+                    data.CurrentDay = data.Days[date];
+                }
+
                 // Skip Family Sharing
                 if (license.PaymentMethod == EPaymentMethod.AuthorizedDevice)
                     continue;
-
-                if (!days.ContainsKey(license.TimeCreated.Date))
-                    days[license.TimeCreated.Date] = new DayInfo();
 
                 var fl = (license.LicenseFlags & ~ELicenseFlags.RegionRestrictionExpired).ToString();
 
                 if (!uniqueLicenseFlags.Contains(fl))
                     uniqueLicenseFlags.Add(fl);
 
-                var di = days[license.TimeCreated.Date];
-
                 var package = conn.Packages[license.PackageID];
 
                 var typesPackage = new List<string>();
 
                 var isfree = TemporaryTypes.Contains(package.BillingType) || package.ID == 0;
-
-                var paymentType = isfree ? "free" : "paid";
-                typesPackage.Add(paymentType);
 
                 foreach (var appid in package.Apps)
                 {
@@ -112,35 +166,61 @@ namespace SteamStatsDumper
 
                     (isfree ? appsOwnedFree : appsOwned).Add(appid);
 
-                    var types = new List<string>();
-                    types.AddRange(typesPackage);
-
                     var app = conn.Apps[appid];
 
                     var appType = app?.Type ?? "unknown";
 
-                    types.Add($"{appType}_{paymentType}");
-
-                    foreach (var type in types)
+                    if (!data.AppType.ContainsKey(appType))
                     {
-                        if (!di.Entries.ContainsKey(type))
-                            di.Entries[type] = 1;
-                        else
-                            di.Entries[type]++;
+                        data.AppType[appType] = new TypeInfo
+                        {
+                            Type = appType,
+                        };
+                    }
 
-                        if (!totals.ContainsKey(type))
-                            totals[type] = 1;
-                        else
-                            totals[type]++;
+                    var typeInfo = data.AppType[appType];
+
+                    if (typeInfo.CurrentDay == null || typeInfo.CurrentDay.Date != date)
+                    {
+                        var nextDay = typeInfo.CurrentDay?.Date.AddDays(1) ?? date;
+
+                        // Fill gaps
+                        while (nextDay <= date)
+                        {
+                            typeInfo.Days[nextDay] = new TypeDay
+                            {
+                                Date = nextDay,
+                                FreeCumulative = typeInfo.CurrentDay?.FreeCumulative ?? 0,
+                                PaidCumulative = typeInfo.CurrentDay?.PaidCumulative ?? 0,
+                            };
+                            nextDay = nextDay.AddDays(1);
+                        }
+
+                        typeInfo.CurrentDay = typeInfo.Days[date];
+                    }
+
+                    if (isfree)
+                    {
+                        // Global Total
+                        data.CurrentDay.Free++;
+                        data.CurrentDay.FreeCumulative++;
+
+                        // This Type
+                        typeInfo.CurrentDay.Free++;
+                        typeInfo.CurrentDay.FreeCumulative++;
+                    }
+                    else
+                    {
+                        // Global Total
+                        data.CurrentDay.Paid++;
+                        data.CurrentDay.PaidCumulative++;
+
+                        // This Type
+                        typeInfo.CurrentDay.Paid++;
+                        typeInfo.CurrentDay.PaidCumulative++;
                     }
                 }
             }
-
-            var data = new AllInfo
-            {
-                Totals = totals,
-                Days = days,
-            };
 
             foreach (var format in outputsTodo)
             {
@@ -158,10 +238,15 @@ namespace SteamStatsDumper
 
             sb.Append($"DAY");
 
-            foreach (var key in data.Totals.Keys)
+            foreach (var key in data.AppType.Keys)
             {
-                cums[key] = 0;
-                sb.Append($";{key};{key}_cumulative");
+                cums[$"{key}_free"] = 0;
+                cums[$"{key}_free_cumulative"] = 0;
+                cums[$"{key}_paid"] = 0;
+                cums[$"{key}_paid_cumulative"] = 0;
+
+                sb.Append($";{key}_free;{key}_free_cumulative");
+                sb.Append($";{key}_paid;{key}_paid_cumulative");
             }
 
             sb.AppendLine();
@@ -170,13 +255,22 @@ namespace SteamStatsDumper
             {
                 sb.Append($"{day.Key.ToShortDateString()}");
 
-                foreach (var key in data.Totals.Keys)
+                foreach (var kv in data.AppType)
                 {
-                    var t = day.Value.Entries.ContainsKey(key) ? day.Value.Entries[key] : 0;
+                    if (!kv.Value.Days.ContainsKey(day.Key))
+                    {
+                        // No activations in current day
+                        var cumufree = cums[$"{kv.Key}_free"];
+                        var cumupaid = cums[$"{kv.Key}_free"];
 
-                    cums[key] += t;
+                        sb.Append($";0;{cumufree};0;{cumupaid}");
 
-                    sb.Append($";{t};{cums[key]}");
+                        continue;
+                    }
+
+                    var typeDay = kv.Value.Days[day.Key];
+
+                    sb.Append($";{typeDay.Free};{typeDay.FreeCumulative};{typeDay.Paid};{typeDay.PaidCumulative}");
                 }
 
                 sb.AppendLine();
@@ -187,21 +281,103 @@ namespace SteamStatsDumper
             Console.WriteLine("Written to games.csv");
         }
 
-        protected static void OutputHtml(AllInfo data)
+        protected static string ProcessTemplate(string filename, Dictionary<string, string> vars)
         {
-            var template = new StringBuilder(File.ReadAllText("template.html"));
-
-            var vars = new Dictionary<string, string>
-            {
-                ["time"] = DateTimeOffset.Now.ToString(),
-                ["packagesJson"] = JsonConvert.SerializeObject(conn.Packages, Formatting.Indented),
-                ["appsJson"] = JsonConvert.SerializeObject(conn.Apps, Formatting.Indented),
-            };
+            var template = new StringBuilder(File.ReadAllText($"template-{filename}.html"));
 
             foreach (var item in vars)
                 template.Replace($"%{item.Key}%", item.Value);
 
-            File.WriteAllText("games.html", template.ToString());
+            template.Replace("%", "&#37;");
+
+            return template.ToString();
+        }
+
+        // TODO: Add rest of axis
+        protected static string OutputDatapoints(IEnumerable<TypeDay> day)
+        {
+            return JsonConvert.SerializeObject(new object[] {
+                new
+                {
+                    x = day.Select(x => x.Date.ToString()),
+                    y = day.Select(x => x.PaidCumulative),
+                    type = "scatter"
+                },
+            });
+        }
+
+        protected static void OutputHtml(AllInfo data)
+        {
+            var mainFile = "index.html";
+            var gamesFile = "games.html";
+
+            var files = new Dictionary<string, string>
+            {
+                [mainFile] = OutputMain(data),
+                [mainFile] = OutputGames(data),
+            };
+
+            var vars = new Dictionary<string, string>
+            {
+                ["time"] = DateTimeOffset.Now.ToString(),
+                ["filemain"] = mainFile,
+                ["filegames"] = gamesFile
+            };
+
+            var dirname = $"output";
+
+            if (!Directory.Exists(dirname))
+                Directory.CreateDirectory(dirname);
+
+            foreach (var kv in files)
+                File.WriteAllText(Path.Combine(dirname, kv.Key), kv.Value);
+
+            Console.WriteLine("HTML-output done");
+        }
+
+        protected static string OutputMain(AllInfo data)
+        {
+            var vars = new Dictionary<string, string>
+            {
+            };
+
+            var sbTypeTable = new StringBuilder();
+            var sbAllTypes = new StringBuilder();
+
+            foreach (var item in data.AppType.Values)
+            {
+                var typeExists = AppType.ContainsKey(item.Type);
+
+                var varsType = new Dictionary<string, string>
+                {
+                    ["type"] = item.Type,
+                    ["name"] = typeExists ? AppType[item.Type].Name : item.Type,
+                    ["help"] = (typeExists ? AppType[item.Type].HelpText : null) ?? "",
+                    ["total"] = item.Total.ToString("N0"),
+                    ["free"] = item.Free.ToString("N0"),
+                    ["paid"] = item.Paid.ToString("N0")
+                };
+
+                varsType["json"] = OutputDatapoints(item.Days.Values);
+
+                sbTypeTable.AppendLine(ProcessTemplate("type-total", varsType));
+
+                sbAllTypes.AppendLine(ProcessTemplate("type", varsType));
+            }
+
+            vars["typeTable"] = sbTypeTable.ToString();
+            vars["typeSections"] = sbAllTypes.ToString();
+
+            return ProcessTemplate("main", vars);
+        }
+
+        protected static string OutputGames(AllInfo data)
+        {
+            var vars = new Dictionary<string, string>
+            {
+            };
+
+            return ProcessTemplate("games", vars);
         }
     }
 }
